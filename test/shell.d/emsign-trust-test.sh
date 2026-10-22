@@ -14,8 +14,10 @@ migration="$test_dir/migration.sh"
 tls_bundle="$test_dir/extracted/tls-ca-bundle.pem"
 sed "s|/etc/ca-certificates/extracted|$test_dir/extracted|g" \
   "$ROOT/migrations/1792551241.sh" >"$migration"
-mkdir -p "${tls_bundle%/*}"
+cadir_root="$test_dir/extracted/cadir/emSign_ECC_Root_CA_-_G3.pem"
+mkdir -p "${cadir_root%/*}"
 printf '# emSign ECC Root CA - G3\n' >"$tls_bundle"
+touch "$cadir_root"
 export OMARCHY_PATH="$test_dir/tree" CALL_LOG="$test_dir/calls" SUDO_LOG="$test_dir/sudo-calls"
 export PATH="$test_dir/bin:$PATH"
 
@@ -53,17 +55,28 @@ fi
 pass "migration stays retryable when privilege is refused"
 
 printf '# Some Other Root CA\n' >"$tls_bundle"
+rm "$cadir_root"
 rm -f "$SUDO_LOG"
 bash -euo pipefail "$migration" || fail "migration must succeed once the root is distrusted"
 [[ ! -e $SUDO_LOG ]] || fail "distrusted root must not ask for privilege"
 pass "migration is a no-op for another user once the root is distrusted"
 
-rm "$tls_bundle"
+touch "$cadir_root"
+if SUDO_ALLOWED=0 bash -euo pipefail "$migration"; then
+  fail "a stale cadir entry must not count as distrusted"
+fi
+rm "$cadir_root"
+mv "$tls_bundle" "$test_dir/bundle"
 if SUDO_ALLOWED=0 bash -euo pipefail "$migration"; then
   fail "a missing TLS bundle must not count as distrusted"
 fi
-printf '# emSign ECC Root CA - G3\n' >"$tls_bundle"
-pass "migration repairs when the TLS bundle is missing"
+mv "$test_dir/bundle" "$tls_bundle"
+rmdir "${cadir_root%/*}"
+if SUDO_ALLOWED=0 bash -euo pipefail "$migration"; then
+  fail "a missing cadir must not count as distrusted"
+fi
+mkdir "${cadir_root%/*}"
+pass "migration repairs an extraction that did not finish"
 
 printf 'administrator policy\n' >"$blocklist"
 before=$(wc -l <"$CALL_LOG")
