@@ -10,7 +10,13 @@ blocklist="$test_dir/trust/blocklist/omarchy-emsign-ecc-root-ca-g3.pem"
 sed "s|/etc/ca-certificates/trust-source|$test_dir/trust|g" \
   "$ROOT/install/config/block-emsign-root.sh" >"$leaf"
 cp "$ROOT/install/config/emsign-ecc-root-ca-g3.pem" "${leaf%/*}/"
-export OMARCHY_PATH="$test_dir/tree" CALL_LOG="$test_dir/calls"
+migration="$test_dir/migration.sh"
+tls_bundle="$test_dir/extracted/tls-ca-bundle.pem"
+sed "s|/etc/ca-certificates/extracted|$test_dir/extracted|g" \
+  "$ROOT/migrations/1792551241.sh" >"$migration"
+mkdir -p "${tls_bundle%/*}"
+printf '# emSign ECC Root CA - G3\n' >"$tls_bundle"
+export OMARCHY_PATH="$test_dir/tree" CALL_LOG="$test_dir/calls" SUDO_LOG="$test_dir/sudo-calls"
 export PATH="$test_dir/bin:$PATH"
 
 cat >"$test_dir/bin/update-ca-trust" <<'STUB'
@@ -20,6 +26,7 @@ exit "${EXTRACT_STATUS:-0}"
 STUB
 cat >"$test_dir/bin/sudo" <<'STUB'
 #!/bin/bash
+echo sudo >>"$SUDO_LOG"
 [[ ${SUDO_ALLOWED:-1} == "1" ]] || exit 1
 exec "$@"
 STUB
@@ -34,16 +41,29 @@ bash -euo pipefail "$leaf"
 [[ $(wc -l <"$CALL_LOG") == "2" ]] || fail "rerun regenerates trust"
 pass "rerun preserves the blocklist and retries trust extraction"
 
-if EXTRACT_STATUS=7 bash -euo pipefail "$ROOT/migrations/1792551241.sh"; then
+if EXTRACT_STATUS=7 bash -euo pipefail "$migration"; then
   fail "failed trust extraction must fail the migration"
 fi
-bash -euo pipefail "$ROOT/migrations/1792551241.sh"
+bash -euo pipefail "$migration"
 pass "migration propagates extraction failure and succeeds on retry"
 
-if SUDO_ALLOWED=0 bash -euo pipefail "$ROOT/migrations/1792551241.sh"; then
+if SUDO_ALLOWED=0 bash -euo pipefail "$migration"; then
   fail "refused sudo must fail the migration"
 fi
 pass "migration stays retryable when privilege is refused"
+
+printf '# Some Other Root CA\n' >"$tls_bundle"
+rm -f "$SUDO_LOG"
+bash -euo pipefail "$migration" || fail "migration must succeed once the root is distrusted"
+[[ ! -e $SUDO_LOG ]] || fail "distrusted root must not ask for privilege"
+pass "migration is a no-op for another user once the root is distrusted"
+
+rm "$tls_bundle"
+if SUDO_ALLOWED=0 bash -euo pipefail "$migration"; then
+  fail "a missing TLS bundle must not count as distrusted"
+fi
+printf '# emSign ECC Root CA - G3\n' >"$tls_bundle"
+pass "migration repairs when the TLS bundle is missing"
 
 printf 'administrator policy\n' >"$blocklist"
 before=$(wc -l <"$CALL_LOG")
